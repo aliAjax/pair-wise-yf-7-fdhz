@@ -14,6 +14,8 @@ const defaultState = {
   selectedTypeId: starterInventory[0].id,
   placements: [],
   drafts: [],
+  proofs: [],
+  activeProofId: null,
   settings: {
     paperSize: "postcard",
     flowMode: "horizontal",
@@ -21,6 +23,8 @@ const defaultState = {
     workTitle: "晚风小笺"
   }
 };
+
+const roundNames = ["初校", "二校", "三校", "四校", "五校", "六校", "七校", "八校", "九校", "十校"];
 
 let state = loadState();
 
@@ -47,8 +51,25 @@ const els = {
   inventoryCount: document.querySelector("#inventoryCount"),
   saveDraftBtn: document.querySelector("#saveDraftBtn"),
   exportBtn: document.querySelector("#exportBtn"),
-  clearBoardBtn: document.querySelector("#clearBoardBtn")
+  clearBoardBtn: document.querySelector("#clearBoardBtn"),
+  sendProofBtn: document.querySelector("#sendProofBtn"),
+  proofList: document.querySelector("#proofList"),
+  proofModal: document.querySelector("#proofModal"),
+  proofModalTitle: document.querySelector("#proofModalTitle"),
+  proofModalClose: document.querySelector("#proofModalClose"),
+  proofModalBanner: document.querySelector("#proofModalBanner"),
+  proofForm: document.querySelector("#proofForm"),
+  proofReader: document.querySelector("#proofReader"),
+  proofNote: document.querySelector("#proofNote"),
+  proofGrid: document.querySelector("#proofGrid"),
+  errorRows: document.querySelector("#errorRows"),
+  proofProblems: document.querySelector("#proofProblems"),
+  proofSubmitBtn: document.querySelector("#proofSubmitBtn"),
+  proofHint: document.querySelector("#proofHint")
 };
+
+// modalCtx: { mode: "register" | "view", proofId, version, errors: {"row:col": "正字"} }
+let modalCtx = null;
 
 function loadState() {
   const saved = localStorage.getItem(storageKey);
@@ -58,6 +79,7 @@ function loadState() {
     return {
       ...structuredClone(defaultState),
       ...parsed,
+      proofs: Array.isArray(parsed.proofs) ? parsed.proofs : [],
       settings: { ...defaultState.settings, ...parsed.settings }
     };
   } catch {
@@ -69,8 +91,7 @@ function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(state));
 }
 
-function getGrid() {
-  const size = state.settings.paperSize;
+function getGrid(size = state.settings.paperSize) {
   if (size === "bookmark") return { cols: 7, rows: 18 };
   if (size === "square") return { cols: 12, rows: 12 };
   return { cols: 16, rows: 10 };
@@ -78,6 +99,19 @@ function getGrid() {
 
 function placementKey(row, col) {
   return `${row}:${col}`;
+}
+
+function parseCellKey(key) {
+  const [row, col] = key.split(":").map(Number);
+  return { row, col };
+}
+
+function cellLabel(row, col) {
+  return `第${row + 1}行第${col + 1}列`;
+}
+
+function roundLabel(round) {
+  return roundNames[round - 1] || `${round}校`;
 }
 
 function getSelectedType() {
@@ -89,6 +123,11 @@ function getUsage() {
     acc[placement.typeId] = (acc[placement.typeId] || 0) + 1;
     return acc;
   }, {});
+}
+
+function getShortages() {
+  const usage = getUsage();
+  return state.inventory.filter((item) => usage[item.id] > item.quantity);
 }
 
 function renderSettings() {
@@ -127,7 +166,11 @@ function renderInventory() {
           <div class="glyph" style="font-size:${Math.min(item.size, 36)}px">${escapeHtml(item.char)}</div>
           <div class="type-meta">
             <strong>${escapeHtml(item.char)} · ${escapeHtml(item.style)}</strong>
-            <span>${item.size}px · ${escapeHtml(item.wear)} · 已用${used}/${item.quantity}</span>
+            <span class="qty-stepper">
+              <button type="button" title="减少数量" data-qty-type="${item.id}" data-delta="-1">−</button>
+              ${item.size}px · ${escapeHtml(item.wear)} · 已用${used}/${item.quantity}
+              <button type="button" title="增加数量" data-qty-type="${item.id}" data-delta="1">＋</button>
+            </span>
           </div>
           <button class="mini-btn" title="删除字模" data-delete-type="${item.id}" type="button">×</button>
         </article>
@@ -136,9 +179,25 @@ function renderInventory() {
     .join("");
 }
 
+function activeProof() {
+  return state.proofs.find((proof) => proof.id === state.activeProofId) || null;
+}
+
+function latestRound(proof) {
+  return proof.rounds.length ? proof.rounds[proof.rounds.length - 1] : null;
+}
+
+// 待校校样最近一次登记的错字格 -> 正字，用作版面占用提示
+function pendingErrorMap(proof) {
+  if (!proof || proof.status !== "pending") return {};
+  const round = latestRound(proof);
+  return round && !round.approved ? round.errors : {};
+}
+
 function renderStage() {
   const { cols, rows } = getGrid();
   const map = new Map(state.placements.map((item) => [placementKey(item.row, item.col), item]));
+  const errorMap = pendingErrorMap(activeProof());
   els.stage.className = `stage ${state.settings.paperSize}`;
   els.stage.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
   els.stage.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
@@ -146,12 +205,17 @@ function renderStage() {
   const cells = [];
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
-      const placement = map.get(placementKey(row, col));
+      const key = placementKey(row, col);
+      const placement = map.get(key);
       const type = placement ? state.inventory.find((item) => item.id === placement.typeId) : null;
       const vertical = state.settings.flowMode === "vertical" ? "vertical" : "";
+      const correct = errorMap[key];
+      const errMark = correct
+        ? `<span class="err-mark" title="错字格 ${cellLabel(row, col)}，应为「${escapeHtml(correct)}」">误</span>`
+        : "";
       cells.push(`
         <button class="cell ${type ? "used" : ""} ${vertical}" data-row="${row}" data-col="${col}" type="button" aria-label="第${row + 1}行第${col + 1}列">
-          ${type ? escapeHtml(type.char) : ""}
+          ${type ? escapeHtml(type.char) : ""}${errMark}
         </button>
       `);
     }
@@ -164,7 +228,7 @@ function renderUsage() {
   const entries = state.inventory.filter((item) => usage[item.id]);
   els.placedCount.textContent = `${state.placements.length}个落字`;
 
-  const shortages = entries.filter((item) => usage[item.id] > item.quantity);
+  const shortages = getShortages();
   els.shortageBadge.textContent = shortages.length ? `${shortages.length}处超量` : "数量充足";
   els.shortageBadge.className = `badge ${shortages.length ? "warn" : "ok"}`;
 
@@ -184,6 +248,79 @@ function renderUsage() {
         `;
       })
       .join("") || `<p class="empty">还没有落字。</p>`;
+}
+
+function renderRound(proof, round) {
+  const versionChip = `<span class="proof-chip" data-proof-view="${proof.id}:${round.version}">V${round.version}</span>`;
+  if (round.approved) {
+    return `
+      <div class="round-item approve">
+        <div class="round-line">
+          <span>${roundLabel(round.round)} · ${escapeHtml(round.reader)} · 通过付印 ${versionChip}</span>
+        </div>
+        ${round.note ? `<div class="round-note">${escapeHtml(round.note)}</div>` : ""}
+      </div>
+    `;
+  }
+  const tags = Object.keys(round.errors)
+    .map((key) => {
+      const { row, col } = parseCellKey(key);
+      return `<span class="error-cell-tag">${cellLabel(row, col)} 应为「${escapeHtml(round.errors[key])}」</span>`;
+    })
+    .join("");
+  return `
+    <div class="round-item">
+      <div class="round-line">
+        <strong>${roundLabel(round.round)} · ${escapeHtml(round.reader)} · 返修</strong>
+        ${versionChip}
+      </div>
+      <div class="error-cell-tags">${tags}</div>
+      <div class="round-note">${escapeHtml(round.note)}</div>
+    </div>
+  `;
+}
+
+function renderProofCard(proof, isActive) {
+  const statusTag =
+    proof.status === "approved"
+      ? `<span class="proof-tag approved">已通过</span>`
+      : `<span class="proof-tag pending">待校</span>`;
+  const rounds = proof.rounds.map((round) => renderRound(proof, round)).join("");
+  const actions = isActive
+    ? `
+      <div class="proof-actions">
+        <button type="button" data-proof-register="${proof.id}">登记下一校次</button>
+        <button type="button" data-proof-delete="${proof.id}">作废</button>
+      </div>`
+    : `
+      <div class="proof-actions">
+        <button type="button" data-proof-load="${proof.id}">载入版面</button>
+        <button type="button" data-proof-delete="${proof.id}">删除</button>
+      </div>`;
+  return `
+    <article class="proof-card ${isActive ? "" : "archived"}">
+      <div class="proof-card-head">
+        <strong>《${escapeHtml(proof.title)}》</strong>
+        ${statusTag}
+      </div>
+      <div class="proof-meta">
+        ${proof.rounds.length}个校次 · 更新于 ${new Date(proof.updatedAt).toLocaleString("zh-CN")}
+      </div>
+      <span class="proof-chip" data-proof-view="${proof.id}:${proof.currentVersion}">查看当前版 V${proof.currentVersion}</span>
+      <div class="rounds">${rounds || `<span class="proof-meta">尚未登记校次。</span>`}</div>
+      ${actions}
+    </article>
+  `;
+}
+
+function renderProofs() {
+  if (!state.proofs.length) {
+    els.proofList.innerHTML = `<p class="empty">还没有送校的校样。</p>`;
+    return;
+  }
+  const active = activeProof();
+  const others = state.proofs.filter((proof) => proof !== active);
+  els.proofList.innerHTML = [active, ...others].filter(Boolean).map((proof) => renderProofCard(proof, proof === active)).join("");
 }
 
 function renderDrafts() {
@@ -211,8 +348,306 @@ function renderAll() {
   renderInventory();
   renderStage();
   renderUsage();
+  renderProofs();
   renderDrafts();
 }
+
+// ---------- 付印校次 ----------
+
+function liveSignature() {
+  const placements = state.placements
+    .map((item) => `${item.row}:${item.col}:${item.typeId}`)
+    .sort()
+    .join("|");
+  const quantities = state.inventory
+    .map((item) => `${item.id}:${item.quantity}`)
+    .sort()
+    .join("|");
+  return `${placements}##${quantities}`;
+}
+
+function makeSnapshot(reason) {
+  return {
+    reason,
+    createdAt: new Date().toISOString(),
+    settings: structuredClone(state.settings),
+    placements: structuredClone(state.placements),
+    inventory: structuredClone(state.inventory),
+    signature: liveSignature()
+  };
+}
+
+function createProof() {
+  return {
+    id: crypto.randomUUID(),
+    title: state.settings.workTitle.trim() || "未命名作品",
+    currentVersion: 1,
+    status: "pending",
+    versions: [{ version: 1, ...makeSnapshot("首次送校") }],
+    rounds: [],
+    cellStreaks: {},
+    lastProofreader: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+// 落字或字模数量改动：已通过/待校校样立刻恢复待校，并生成只读新版本
+function bumpActiveProof(reason) {
+  const proof = activeProof();
+  if (!proof) return;
+  proof.status = "pending";
+  const signature = liveSignature();
+  const last = proof.versions[proof.versions.length - 1];
+  if (!last || last.signature !== signature) {
+    proof.currentVersion += 1;
+    proof.versions.push({ version: proof.currentVersion, ...makeSnapshot(reason) });
+  }
+  proof.updatedAt = new Date().toISOString();
+}
+
+function validateProofData(proof, data) {
+  const problems = [];
+  if (!data.reader) problems.push("未登记校对人，整次送校拒绝。");
+  if (!state.settings.workTitle.trim()) problems.push("作品名为空，不能送校付印。");
+
+  const shortages = getShortages();
+  if (shortages.length) {
+    const names = shortages.map((item) => `${item.char}（需${getUsage()[item.id]}／存${item.quantity}）`).join("、");
+    problems.push(`仍有超量字模：${names}，整次送校拒绝。`);
+  }
+
+  const errorKeys = Object.keys(data.errors);
+  errorKeys.forEach((key) => {
+    if (!data.errors[key].trim()) {
+      const { row, col } = parseCellKey(key);
+      problems.push(`${cellLabel(row, col)}标记为错字格但未登记正字。`);
+    }
+  });
+
+  if (errorKeys.length && !data.note.trim()) {
+    problems.push("登记了错字格但返修说明为空，请填写返修说明。");
+  }
+
+  const willApprove = errorKeys.length === 0;
+  if (willApprove && proof) {
+    const blocked = Object.entries(proof.cellStreaks)
+      .filter(([, streak]) => streak >= 2)
+      .map(([key]) => {
+        const { row, col } = parseCellKey(key);
+        return cellLabel(row, col);
+      });
+    if (blocked.length && proof.lastProofreader && data.reader === proof.lastProofreader) {
+      problems.push(`${blocked.join("、")}已连续返修两次，必须更换校对人才能再次通过（上次校对人：${proof.lastProofreader}）。`);
+    }
+  }
+  return problems;
+}
+
+function submitProof() {
+  if (!modalCtx || modalCtx.mode !== "register") return;
+  const reader = els.proofReader.value.trim();
+  const note = els.proofNote.value.trim();
+  const errors = {};
+  Object.entries(modalCtx.errors).forEach(([key, value]) => {
+    if (value.trim()) errors[key] = value.trim();
+  });
+
+  let proof = activeProof();
+  const problems = validateProofData(proof, { reader, note, errors });
+  if (problems.length) {
+    renderProofProblems(problems);
+    return;
+  }
+
+  if (!proof) {
+    proof = createProof();
+    state.proofs.unshift(proof);
+    state.activeProofId = proof.id;
+  } else {
+    // 提交时若版面相对上一版本已有改动，先固化新版本
+    const signature = liveSignature();
+    const last = proof.versions[proof.versions.length - 1];
+    if (!last || last.signature !== signature) {
+      proof.currentVersion += 1;
+      proof.versions.push({ version: proof.currentVersion, ...makeSnapshot("送校前版面改动") });
+    }
+  }
+
+  const approved = Object.keys(errors).length === 0;
+  const round = {
+    round: proof.rounds.length + 1,
+    reader,
+    note,
+    errors: approved ? {} : structuredClone(errors),
+    approved,
+    version: proof.currentVersion,
+    at: new Date().toISOString()
+  };
+  proof.rounds.push(round);
+  proof.lastProofreader = reader;
+
+  if (approved) {
+    proof.status = "approved";
+    proof.cellStreaks = {};
+  } else {
+    proof.status = "pending";
+    const nextStreaks = {};
+    Object.keys(errors).forEach((key) => {
+      nextStreaks[key] = (proof.cellStreaks[key] || 0) + 1;
+    });
+    proof.cellStreaks = nextStreaks;
+  }
+  proof.updatedAt = new Date().toISOString();
+
+  closeProofModal();
+  renderAll();
+}
+
+function snapshotForView(proof, version) {
+  const snap = proof.versions.find((item) => item.version === version) || proof.versions[proof.versions.length - 1];
+  return snap || null;
+}
+
+function openRegisterModal(proof) {
+  modalCtx = { mode: "register", proofId: proof ? proof.id : null, version: proof ? proof.currentVersion : null, errors: {} };
+  els.proofModalTitle.textContent = proof
+    ? `送校登记 · 第${proof.rounds.length + 1}校次 · V${proof.currentVersion}`
+    : "首次送校登记";
+  els.proofModalBanner.hidden = true;
+  els.proofForm.inert = false;
+  els.proofModal.classList.remove("view");
+  els.proofSubmitBtn.hidden = false;
+  els.proofReader.value = "";
+  els.proofNote.value = "";
+  els.proofHint.textContent = "存在超量字模、空作品名或错字格未登记时，整次拒绝且版面不变。";
+  els.proofModal.hidden = false;
+  renderProofModal();
+}
+
+function openViewModal(proofId, version) {
+  const proof = state.proofs.find((item) => item.id === proofId);
+  if (!proof) return;
+  const snap = snapshotForView(proof, version);
+  if (!snap) return;
+  modalCtx = { mode: "view", proofId, version: snap.version, errors: {} };
+  els.proofModalTitle.textContent = `《${proof.title}》V${snap.version} 校样`;
+  els.proofModalBanner.hidden = false;
+  els.proofModalBanner.className = "modal-banner readonly";
+  els.proofModalBanner.textContent = `只读历史版本（${snap.reason} · ${new Date(snap.createdAt).toLocaleString("zh-CN")}），旧版本不可改动。`;
+  els.proofForm.inert = true;
+  els.proofModal.classList.add("view");
+  els.proofSubmitBtn.hidden = true;
+  els.proofProblems.hidden = true;
+  els.proofHint.textContent = "";
+  els.proofModal.hidden = false;
+  renderProofModal();
+}
+
+function closeProofModal() {
+  els.proofModal.hidden = true;
+  els.proofForm.inert = false;
+  els.proofModal.classList.remove("view");
+  modalCtx = null;
+}
+
+function renderProofProblems(problems) {
+  if (!problems.length) {
+    els.proofProblems.hidden = true;
+    els.proofProblems.innerHTML = "";
+    els.proofSubmitBtn.disabled = false;
+    els.proofSubmitBtn.title = "";
+    return;
+  }
+  els.proofProblems.hidden = false;
+  els.proofProblems.innerHTML = problems.map((problem) => `<li>${escapeHtml(problem)}</li>`).join("");
+  els.proofSubmitBtn.disabled = true;
+  els.proofSubmitBtn.title = "闸门未通过，整次送校拒绝";
+}
+
+function renderProofModal() {
+  if (!modalCtx) return;
+  const proof = modalCtx.proofId ? state.proofs.find((item) => item.id === modalCtx.proofId) : activeProof();
+
+  let settings;
+  let placements;
+  let inventory;
+  let marks = {};
+
+  if (modalCtx.mode === "view") {
+    const viewProof = state.proofs.find((item) => item.id === modalCtx.proofId);
+    const snap = snapshotForView(viewProof, modalCtx.version);
+    settings = snap.settings;
+    placements = snap.placements;
+    inventory = snap.inventory;
+    viewProof.rounds
+      .filter((round) => round.version === snap.version)
+      .forEach((round) => {
+        marks = { ...marks, ...round.errors };
+      });
+  } else {
+    settings = state.settings;
+    placements = state.placements;
+    inventory = state.inventory;
+    marks = modalCtx.errors;
+  }
+
+  const { cols, rows } = getGrid(settings.paperSize);
+  const map = new Map(placements.map((item) => [placementKey(item.row, item.col), item]));
+  els.proofGrid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  els.proofGrid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+  const cells = [];
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const key = placementKey(row, col);
+      const placement = map.get(key);
+      const type = placement ? inventory.find((item) => item.id === placement.typeId) : null;
+      const marked = marks[key] !== undefined;
+      const mark = marked ? `<span class="err-mark">误</span>` : "";
+      cells.push(`
+        <button type="button" class="proof-cell ${marked ? "marked" : ""}" data-proof-cell="${key}" title="${cellLabel(row, col)}">
+          ${type ? escapeHtml(type.char) : ""}${mark}
+        </button>
+      `);
+    }
+  }
+  els.proofGrid.innerHTML = cells.join("");
+
+  if (modalCtx.mode === "register") {
+    els.errorRows.innerHTML = Object.keys(modalCtx.errors)
+      .map((key) => {
+        const { row, col } = parseCellKey(key);
+        return `
+          <div class="error-row">
+            <label>${cellLabel(row, col)}</label>
+            <input type="text" maxlength="2" placeholder="登记正字" data-error-key="${key}" value="${escapeHtml(modalCtx.errors[key])}" />
+          </div>
+        `;
+      })
+      .join("");
+
+    const problems = validateProofData(proof, {
+      reader: els.proofReader.value.trim(),
+      note: els.proofNote.value.trim(),
+      errors: modalCtx.errors
+    });
+    renderProofProblems(problems);
+  } else {
+    els.errorRows.innerHTML = Object.keys(marks)
+      .map((key) => {
+        const { row, col } = parseCellKey(key);
+        return `
+          <div class="error-row">
+            <label>${cellLabel(row, col)}</label>
+            <input type="text" value="应为「${escapeHtml(marks[key])}」" disabled />
+          </div>
+        `;
+      })
+      .join("");
+  }
+}
+
+// ---------- 版面与字模操作 ----------
 
 function placeType(row, col, typeId = state.selectedTypeId) {
   if (!typeId) return;
@@ -226,6 +661,7 @@ function placeType(row, col, typeId = state.selectedTypeId) {
   } else {
     state.placements.push({ row, col, typeId });
   }
+  bumpActiveProof("落字调整");
   renderAll();
 }
 
@@ -309,10 +745,13 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+// ---------- 事件 ----------
+
 els.paperSize.addEventListener("change", () => {
   state.settings.paperSize = els.paperSize.value;
   const { cols, rows } = getGrid();
   state.placements = state.placements.filter((item) => item.row < rows && item.col < cols);
+  bumpActiveProof("纸张调整");
   renderAll();
 });
 
@@ -338,16 +777,27 @@ els.saveDraftBtn.addEventListener("click", saveDraft);
 els.exportBtn.addEventListener("click", exportPreview);
 els.clearBoardBtn.addEventListener("click", () => {
   state.placements = [];
+  bumpActiveProof("清空版面");
   renderAll();
 });
 
 els.typeList.addEventListener("click", (event) => {
+  const qtyButton = event.target.closest("[data-qty-type]");
+  if (qtyButton) {
+    const item = state.inventory.find((entry) => entry.id === qtyButton.dataset.qtyType);
+    if (!item) return;
+    item.quantity = Math.min(99, Math.max(1, item.quantity + Number(qtyButton.dataset.delta)));
+    bumpActiveProof("字模数量调整");
+    renderAll();
+    return;
+  }
   const deleteButton = event.target.closest("[data-delete-type]");
   if (deleteButton) {
     const typeId = deleteButton.dataset.deleteType;
     state.inventory = state.inventory.filter((item) => item.id !== typeId);
     state.placements = state.placements.filter((item) => item.typeId !== typeId);
     if (state.selectedTypeId === typeId) state.selectedTypeId = state.inventory[0]?.id || null;
+    bumpActiveProof("字模调整");
     renderAll();
     return;
   }
@@ -388,12 +838,98 @@ els.draftList.addEventListener("click", (event) => {
     if (!draft) return;
     state.settings = structuredClone(draft.settings);
     state.placements = structuredClone(draft.placements);
+    bumpActiveProof("载入草稿");
     renderAll();
   }
   if (deleteButton) {
     state.drafts = state.drafts.filter((item) => item.id !== deleteButton.dataset.deleteDraft);
     renderAll();
   }
+});
+
+// 校次面板
+els.sendProofBtn.addEventListener("click", () => openRegisterModal(activeProof()));
+els.proofModalClose.addEventListener("click", closeProofModal);
+els.proofModal.addEventListener("click", (event) => {
+  if (event.target === els.proofModal) closeProofModal();
+});
+els.proofForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitProof();
+});
+els.proofReader.addEventListener("input", renderProofModal);
+els.proofNote.addEventListener("input", renderProofModal);
+
+els.proofGrid.addEventListener("click", (event) => {
+  if (!modalCtx || modalCtx.mode !== "register") return;
+  const cell = event.target.closest("[data-proof-cell]");
+  if (!cell) return;
+  const key = cell.dataset.proofCell;
+  if (key in modalCtx.errors) delete modalCtx.errors[key];
+  else modalCtx.errors[key] = "";
+  renderProofModal();
+});
+
+els.errorRows.addEventListener("input", (event) => {
+  if (!modalCtx || modalCtx.mode !== "register") return;
+  const input = event.target.closest("[data-error-key]");
+  if (!input) return;
+  modalCtx.errors[input.dataset.errorKey] = input.value;
+  const problems = validateProofData(activeProof(), {
+    reader: els.proofReader.value.trim(),
+    note: els.proofNote.value.trim(),
+    errors: modalCtx.errors
+  });
+  renderProofProblems(problems);
+});
+
+els.proofList.addEventListener("click", (event) => {
+  const registerButton = event.target.closest("[data-proof-register]");
+  const deleteButton = event.target.closest("[data-proof-delete]");
+  const loadButton = event.target.closest("[data-proof-load]");
+  const viewButton = event.target.closest("[data-proof-view]");
+
+  if (registerButton) {
+    const proof = state.proofs.find((item) => item.id === registerButton.dataset.proofRegister);
+    if (proof && proof === activeProof()) openRegisterModal(proof);
+    return;
+  }
+  if (deleteButton) {
+    state.proofs = state.proofs.filter((item) => item.id !== deleteButton.dataset.proofDelete);
+    if (state.activeProofId === deleteButton.dataset.proofDelete) state.activeProofId = null;
+    renderAll();
+    return;
+  }
+  if (loadButton) {
+    const proof = state.proofs.find((item) => item.id === loadButton.dataset.proofLoad);
+    if (!proof) return;
+    const snap = proof.versions[proof.versions.length - 1];
+    state.settings = structuredClone(snap.settings);
+    state.placements = structuredClone(snap.placements);
+    snap.inventory.forEach((snapped) => {
+      const existing = state.inventory.find((item) => item.id === snapped.id);
+      if (existing) {
+        existing.quantity = snapped.quantity;
+      } else {
+        state.inventory.push(structuredClone(snapped));
+      }
+    });
+    state.activeProofId = proof.id;
+    renderAll();
+    return;
+  }
+  if (viewButton) {
+    const [proofId, version] = viewButton.dataset.proofView.split(":");
+    openViewModal(proofId, Number(version));
+  }
+});
+
+// 跨标签页浏览器数据同步
+window.addEventListener("storage", (event) => {
+  if (event.key !== storageKey) return;
+  state = loadState();
+  closeProofModal();
+  renderAll();
 });
 
 renderAll();
