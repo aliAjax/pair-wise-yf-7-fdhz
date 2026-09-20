@@ -14,6 +14,8 @@ const defaultState = {
   selectedTypeId: starterInventory[0].id,
   placements: [],
   drafts: [],
+  proofs: [],
+  proofVersion: 0,
   settings: {
     paperSize: "postcard",
     flowMode: "horizontal",
@@ -23,6 +25,10 @@ const defaultState = {
 };
 
 let state = loadState();
+
+// 校对模式会话数据（仅存于内存，未提交不落盘）：pending 待登记，registered 已登记错字格
+let proofMode = false;
+let proofSession = { pending: [], registered: [] };
 
 const els = {
   paperSize: document.querySelector("#paperSize"),
@@ -47,7 +53,22 @@ const els = {
   inventoryCount: document.querySelector("#inventoryCount"),
   saveDraftBtn: document.querySelector("#saveDraftBtn"),
   exportBtn: document.querySelector("#exportBtn"),
-  clearBoardBtn: document.querySelector("#clearBoardBtn")
+  clearBoardBtn: document.querySelector("#clearBoardBtn"),
+  proofBar: document.querySelector("#proofBar"),
+  proofreaderInput: document.querySelector("#proofreaderInput"),
+  proofNoteInput: document.querySelector("#proofNoteInput"),
+  pendingCells: document.querySelector("#pendingCells"),
+  registeredCells: document.querySelector("#registeredCells"),
+  proofReasons: document.querySelector("#proofReasons"),
+  registerAllBtn: document.querySelector("#registerAllBtn"),
+  submitProofBtn: document.querySelector("#submitProofBtn"),
+  cancelProofBtn: document.querySelector("#cancelProofBtn"),
+  proofVersion: document.querySelector("#proofVersion"),
+  proofStatusBadge: document.querySelector("#proofStatusBadge"),
+  proofGateBtn: document.querySelector("#proofGateBtn"),
+  proofHint: document.querySelector("#proofHint"),
+  occupiedHints: document.querySelector("#occupiedHints"),
+  proofList: document.querySelector("#proofList")
 };
 
 function loadState() {
@@ -58,6 +79,8 @@ function loadState() {
     return {
       ...structuredClone(defaultState),
       ...parsed,
+      proofs: Array.isArray(parsed.proofs) ? parsed.proofs : [],
+      proofVersion: Number(parsed.proofVersion) || 0,
       settings: { ...defaultState.settings, ...parsed.settings }
     };
   } catch {
@@ -68,6 +91,26 @@ function loadState() {
 function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(state));
 }
+
+// 其他标签页写入 localStorage 时同步本页（校次列表、占用提示等随之刷新）
+window.addEventListener("storage", (event) => {
+  if (event.key !== storageKey || !event.newValue) return;
+  try {
+    const parsed = JSON.parse(event.newValue);
+    state = {
+      ...structuredClone(defaultState),
+      ...parsed,
+      proofs: Array.isArray(parsed.proofs) ? parsed.proofs : [],
+      proofVersion: Number(parsed.proofVersion) || 0,
+      settings: { ...defaultState.settings, ...parsed.settings }
+    };
+    proofMode = false;
+    proofSession = { pending: [], registered: [] };
+    renderAll();
+  } catch {
+    // 数据损坏时保留当前内存状态
+  }
+});
 
 function getGrid() {
   const size = state.settings.paperSize;
@@ -129,11 +172,19 @@ function renderInventory() {
             <strong>${escapeHtml(item.char)} · ${escapeHtml(item.style)}</strong>
             <span>${item.size}px · ${escapeHtml(item.wear)} · 已用${used}/${item.quantity}</span>
           </div>
-          <button class="mini-btn" title="删除字模" data-delete-type="${item.id}" type="button">×</button>
+          <div class="type-ops">
+            <button class="mini-btn" title="减少字模数量" data-qty-delta="${item.id}:-1" type="button">−</button>
+            <button class="mini-btn" title="增加字模数量" data-qty-delta="${item.id}:1" type="button">＋</button>
+            <button class="mini-btn" title="删除字模" data-delete-type="${item.id}" type="button">×</button>
+          </div>
         </article>
       `;
     })
     .join("");
+}
+
+function cellLabel(row, col) {
+  return `第${row + 1}行第${col + 1}列`;
 }
 
 function renderStage() {
@@ -143,15 +194,26 @@ function renderStage() {
   els.stage.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
   els.stage.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
   els.stage.style.gap = `${state.settings.gridGap}px`;
+  const pendingKeys = new Set(proofSession.pending);
+  const registeredKeys = new Set(proofSession.registered);
   const cells = [];
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
-      const placement = map.get(placementKey(row, col));
+      const key = placementKey(row, col);
+      const placement = map.get(key);
       const type = placement ? state.inventory.find((item) => item.id === placement.typeId) : null;
       const vertical = state.settings.flowMode === "vertical" ? "vertical" : "";
+      const flags = [];
+      if (proofMode) flags.push(type ? "proof-target" : "proof-empty");
+      if (proofMode && pendingKeys.has(key)) flags.push("pending-flag");
+      if (proofMode && registeredKeys.has(key)) flags.push("registered-flag");
+      const mark =
+        proofMode && (pendingKeys.has(key) || registeredKeys.has(key))
+          ? `<span class="cell-mark">${registeredKeys.has(key) ? "错" : "待"}</span>`
+          : "";
       cells.push(`
-        <button class="cell ${type ? "used" : ""} ${vertical}" data-row="${row}" data-col="${col}" type="button" aria-label="第${row + 1}行第${col + 1}列">
-          ${type ? escapeHtml(type.char) : ""}
+        <button class="cell ${type ? "used" : ""} ${vertical} ${flags.join(" ")}" data-row="${row}" data-col="${col}" type="button" aria-label="${cellLabel(row, col)}">
+          ${mark}${type ? escapeHtml(type.char) : ""}
         </button>
       `);
     }
@@ -212,9 +274,185 @@ function renderAll() {
   renderStage();
   renderUsage();
   renderDrafts();
+  renderProofPanel();
+  renderProofSession();
+}
+
+function getVersionProofs(version = state.proofVersion) {
+  return state.proofs.filter((proof) => proof.version === version);
+}
+
+function getLatestProof() {
+  const current = getVersionProofs();
+  return current.length ? current[current.length - 1] : null;
+}
+
+// 统计同一格连续返修（错字登记）次数；一旦该格未出现在最新一次返修记录中即断档
+function getReworkStreaks() {
+  const streaks = {};
+  getVersionProofs().forEach((proof) => {
+    if (proof.result !== "rework") {
+      Object.keys(streaks).forEach((key) => {
+        streaks[key] = 0;
+      });
+      return;
+    }
+    const cells = new Set(proof.cells.map((cell) => cell.key));
+    Object.keys(streaks).forEach((key) => {
+      if (!cells.has(key)) streaks[key] = 0;
+    });
+    proof.cells.forEach((cell) => {
+      streaks[cell.key] = (streaks[cell.key] || 0) + 1;
+    });
+  });
+  return streaks;
+}
+
+function getProofStatus() {
+  if (!state.proofs.length || state.proofVersion === 0) return "idle";
+  const latest = getLatestProof();
+  if (!latest) return "stale";
+  return latest.result === "rework" ? "rework" : "passed";
+}
+
+// 任一落字或字模数量改动：已有校样立即恢复待校，生成新版本，旧版本只读
+function touchLayout() {
+  if (state.proofs.length) state.proofVersion += 1;
+}
+
+function snapshotCell(key) {
+  const [row, col] = key.split(":").map(Number);
+  const placement = state.placements.find((item) => item.row === row && item.col === col);
+  const type = placement ? state.inventory.find((item) => item.id === placement.typeId) : null;
+  return {
+    key,
+    row,
+    col,
+    char: type ? type.char : "空",
+    style: type ? type.style : ""
+  };
+}
+
+function renderProofSession() {
+  els.proofBar.hidden = !proofMode;
+  const chip = (cell, registered) => `
+    <div class="proof-chip ${registered ? "registered" : ""}">
+      <span>${cellLabel(cell.row, cell.col)} · ${escapeHtml(cell.char || "空")}</span>
+      <span class="proof-chip-actions">
+        ${
+          registered
+            ? `<button type="button" data-cell-action="unregister:${cell.key}">撤回登记</button>`
+            : `<button type="button" data-cell-action="register:${cell.key}">登记</button>`
+        }
+        <button type="button" data-cell-action="remove:${cell.key}">移除</button>
+      </span>
+    </div>
+  `;
+  const pendingSnapshots = proofSession.pending.map(snapshotCell);
+  const registeredSnapshots = proofSession.registered.map(snapshotCell);
+  els.pendingCells.innerHTML = pendingSnapshots.map((cell) => chip(cell, false)).join("") || `<p class="empty">点击版面格标为待登记。</p>`;
+  els.registeredCells.innerHTML = registeredSnapshots.map((cell) => chip(cell, true)).join("") || `<p class="empty">还没有已登记错字格。</p>`;
+}
+
+function showProofReasons(reasons) {
+  if (!reasons.length) {
+    els.proofReasons.hidden = true;
+    els.proofReasons.textContent = "";
+    return;
+  }
+  els.proofReasons.hidden = false;
+  els.proofReasons.textContent = reasons.map((reason) => `· ${reason}`).join("\n");
+}
+
+function renderProofPanel() {
+  const status = getProofStatus();
+  const versionText = state.proofVersion > 0 ? `v${state.proofVersion}` : "未送校";
+  els.proofVersion.textContent = versionText;
+
+  const badgeMap = {
+    idle: ["idle", "尚未送校"],
+    rework: ["rework", "返修中 · 待校"],
+    passed: ["passed", "校对通过"],
+    stale: ["stale", "旧版只读"]
+  };
+  const [badgeClass, badgeText] = badgeMap[status];
+  els.proofStatusBadge.className = `badge ${badgeClass}`;
+  els.proofStatusBadge.textContent = badgeText;
+
+  const latest = getLatestProof();
+  if (status === "rework" && latest) {
+    els.proofGateBtn.textContent = "返修后送校";
+    els.proofHint.textContent = `上次校对人：${latest.proofreader}。返修后再次送校；同一格连续返修两次后，必须更换校对人才能通过。`;
+  } else if (status === "passed" && latest) {
+    els.proofGateBtn.textContent = "再次送校";
+    els.proofHint.textContent = `v${state.proofVersion} 已由 ${latest.proofreader} 校对通过。改动任一落字或字模数量会自动生成新版本并恢复待校。`;
+  } else if (status === "stale") {
+    els.proofGateBtn.textContent = "当前版本送校";
+    els.proofHint.textContent = "版面已改动，旧版本校样只读。对当前版面送校将生成新版本。";
+  } else {
+    els.proofGateBtn.textContent = "首次送校";
+    els.proofHint.textContent = "草稿与版面落字定稿后，在此登记校对人、错字格与返修说明。";
+  }
+  els.proofGateBtn.disabled = proofMode;
+
+  renderOccupiedHints();
+  renderProofList();
+}
+
+function renderOccupiedHints() {
+  const streaks = getReworkStreaks();
+  const latest = getLatestProof();
+  const cells = latest && latest.result === "rework" ? latest.cells : [];
+  const hints = cells.map((cell) => {
+    const streak = streaks[cell.key] || 0;
+    const blocked = streak >= 2;
+    return `
+      <div class="occupied-hint">
+        <span>${cellLabel(cell.row, cell.col)} · “${escapeHtml(cell.char)}” 待返修</span>
+        <span class="streak">${blocked ? `已连续返修${streak}次，须换人校对` : `返修${streak}次`}</span>
+      </div>
+    `;
+  });
+  els.occupiedHints.innerHTML = hints.join("");
+}
+
+function renderProofList() {
+  if (!state.proofs.length) {
+    els.proofList.innerHTML = `<p class="empty">还没有校次记录。</p>`;
+    return;
+  }
+  const currentVersion = state.proofVersion;
+  els.proofList.innerHTML = [...state.proofs]
+    .reverse()
+    .map((proof, reverseIndex) => {
+      const ordinal = state.proofs.length - reverseIndex;
+      const locked = proof.version < currentVersion;
+      const tagClass = locked ? "locked" : proof.result;
+      const tagText = locked ? "旧版只读" : proof.result === "rework" ? "返修" : "通过";
+      return `
+        <article class="proof-item ${locked ? "locked" : ""}">
+          <div class="proof-item-head">
+            <strong>第${ordinal}校 · v${proof.version}</strong>
+            <span class="tag ${tagClass}">${tagText}</span>
+          </div>
+          <div class="proof-meta">校对人：${escapeHtml(proof.proofreader)} · ${new Date(proof.submittedAt).toLocaleString("zh-CN")}</div>
+          ${proof.note ? `<div>返修说明：${escapeHtml(proof.note)}</div>` : `<div class="proof-meta">无返修说明（直接通过）</div>`}
+          <details>
+            <summary>${proof.cells.length ? `${proof.cells.length}个错字格` : "无错字格"}</summary>
+            ${
+              proof.cells.length
+                ? proof.cells.map((cell) => `<div>${cellLabel(cell.row, cell.col)} · “${escapeHtml(cell.char)}”</div>`).join("")
+                : ""
+            }
+          </details>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 function placeType(row, col, typeId = state.selectedTypeId) {
+  if (proofMode) return; // 校对模式下版面锁定，改动需先取消校对
   if (!typeId) return;
   const existingIndex = state.placements.findIndex((item) => item.row === row && item.col === col);
   if (existingIndex >= 0) {
@@ -226,6 +464,7 @@ function placeType(row, col, typeId = state.selectedTypeId) {
   } else {
     state.placements.push({ row, col, typeId });
   }
+  touchLayout();
   renderAll();
 }
 
@@ -245,6 +484,7 @@ function addType(event) {
   els.typeForm.reset();
   els.sizeInput.value = 24;
   els.quantityInput.value = 3;
+  touchLayout();
   renderAll();
 }
 
@@ -309,10 +549,163 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function startProofSession() {
+  if (proofMode) return;
+  proofMode = true;
+  const latest = getLatestProof();
+  proofSession = {
+    // 返修中再次送校：带入上次已登记错字格，便于追踪同一格的连续返修
+    pending: [],
+    registered: latest && latest.result === "rework" ? latest.cells.map((cell) => cell.key) : []
+  };
+  els.proofreaderInput.value = "";
+  els.proofNoteInput.value = "";
+  showProofReasons([]);
+  renderAll();
+}
+
+function endProofSession() {
+  proofMode = false;
+  proofSession = { pending: [], registered: [] };
+  showProofReasons([]);
+  renderAll();
+}
+
+function toggleProofCell(row, col) {
+  const key = placementKey(row, col);
+  const occupied = state.placements.some((item) => item.row === row && item.col === col);
+  // 未登记错字格：点在空（未落字）格上无法登记，提交时会以“存在未登记错字格”拒绝
+  if (!occupied) {
+    showProofReasons([`${cellLabel(row, col)}是空格，错字格只能登记在已落字的位置上。`]);
+    return;
+  }
+  const { pending, registered } = proofSession;
+  const pendingIndex = pending.indexOf(key);
+  const registeredIndex = registered.indexOf(key);
+  if (pendingIndex >= 0) {
+    pending.splice(pendingIndex, 1);
+  } else if (registeredIndex >= 0) {
+    registered.splice(registeredIndex, 1);
+  } else {
+    pending.push(key);
+  }
+  showProofReasons([]);
+  renderAll();
+}
+
+function moveCell(key, from, to) {
+  const index = proofSession[from].indexOf(key);
+  if (index < 0) return;
+  proofSession[from].splice(index, 1);
+  if (to !== "removed" && !proofSession[to].includes(key)) proofSession[to].push(key);
+  renderAll();
+}
+
+function submitProof() {
+  const proofreader = els.proofreaderInput.value.trim();
+  const note = els.proofNoteInput.value.trim();
+  const reasons = [];
+
+  // 闸门一：仍有超量字模，整次拒绝，草稿与原版面不变
+  const usage = getUsage();
+  const shortages = state.inventory.filter((item) => (usage[item.id] || 0) > item.quantity);
+  shortages.forEach((item) => {
+    reasons.push(`字模“${item.char} ${item.style}”用量 ${usage[item.id]} 超过存量 ${item.quantity}。`);
+  });
+
+  // 闸门二：空作品名
+  if (!state.settings.workTitle.trim()) {
+    reasons.push("作品名为空，请先在顶部填写作品名。");
+  }
+
+  // 闸门三：未登记错字格（标了但没登记）
+  if (proofSession.pending.length) {
+    const labels = proofSession.pending.map((key) => {
+      const [row, col] = key.split(":").map(Number);
+      return cellLabel(row, col);
+    });
+    reasons.push(`存在未登记错字格：${labels.join("、")}。请登记后再提交。`);
+  }
+
+  // 校对人必填
+  if (!proofreader) reasons.push("请登记校对人姓名。");
+
+  const hasCells = proofSession.registered.length > 0;
+  // 有错字格即返修，返修说明必填
+  if (hasCells && !note) reasons.push("有错字格时必须填写返修说明。");
+
+  // 无错字格 = 申请通过；同一格连续返修两次后必须更换校对人
+  const streaks = getReworkStreaks();
+  const latest = getLatestProof();
+  if (!hasCells && latest && latest.result === "rework") {
+    const doubleReworkCells = latest.cells.filter((cell) => (streaks[cell.key] || 0) >= 2);
+    if (doubleReworkCells.length && proofreader === latest.proofreader) {
+      const labels = doubleReworkCells.map((cell) => cellLabel(cell.row, cell.col));
+      reasons.push(`${labels.join("、")}已连续返修两次，必须更换校对人才能再次通过（上次校对人：${latest.proofreader}）。`);
+    }
+  }
+
+  if (reasons.length) {
+    // 整次拒绝：不写入校次、不升版本、草稿与原版面不变
+    showProofReasons(reasons);
+    return;
+  }
+
+  const isFirstProof = state.proofs.length === 0;
+  const version = isFirstProof ? 1 : state.proofVersion;
+  state.proofs.push({
+    id: crypto.randomUUID(),
+    version,
+    proofreader,
+    note,
+    result: hasCells ? "rework" : "passed",
+    cells: proofSession.registered.map(snapshotCell),
+    title: state.settings.workTitle.trim(),
+    placements: structuredClone(state.placements),
+    settings: structuredClone(state.settings),
+    submittedAt: new Date().toISOString()
+  });
+  state.proofVersion = version;
+  endProofSession();
+}
+
+els.proofGateBtn.addEventListener("click", startProofSession);
+els.cancelProofBtn.addEventListener("click", endProofSession);
+els.submitProofBtn.addEventListener("click", submitProof);
+els.registerAllBtn.addEventListener("click", () => {
+  proofSession.pending.forEach((key) => {
+    if (!proofSession.registered.includes(key)) proofSession.registered.push(key);
+  });
+  proofSession.pending = [];
+  renderAll();
+});
+
+els.pendingCells.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-cell-action]");
+  if (!button) return;
+  const [action, key] = button.dataset.cellAction.split(":");
+  if (action === "register") moveCell(key, "pending", "registered");
+  if (action === "remove") moveCell(key, "pending", "removed");
+});
+
+els.registeredCells.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-cell-action]");
+  if (!button) return;
+  const [action, key] = button.dataset.cellAction.split(":");
+  if (action === "unregister") moveCell(key, "registered", "pending");
+  if (action === "remove") moveCell(key, "registered", "removed");
+});
+
 els.paperSize.addEventListener("change", () => {
+  if (proofMode) {
+    els.paperSize.value = state.settings.paperSize; // 校对会话中锁定会裁落字的设置
+    return;
+  }
   state.settings.paperSize = els.paperSize.value;
   const { cols, rows } = getGrid();
+  const before = state.placements.length;
   state.placements = state.placements.filter((item) => item.row < rows && item.col < cols);
+  if (state.placements.length !== before) touchLayout(); // 换纸裁掉了越界落字
   renderAll();
 });
 
@@ -331,23 +724,45 @@ els.workTitle.addEventListener("input", () => {
   saveState();
 });
 
-els.typeForm.addEventListener("submit", addType);
+els.typeForm.addEventListener("submit", (event) => {
+  if (proofMode) {
+    event.preventDefault();
+    return;
+  }
+  addType(event);
+});
 els.inventorySearch.addEventListener("input", renderInventory);
 els.styleFilter.addEventListener("change", renderInventory);
 els.saveDraftBtn.addEventListener("click", saveDraft);
 els.exportBtn.addEventListener("click", exportPreview);
 els.clearBoardBtn.addEventListener("click", () => {
+  if (proofMode) return;
+  if (!state.placements.length) return;
   state.placements = [];
+  touchLayout();
   renderAll();
 });
 
 els.typeList.addEventListener("click", (event) => {
+  const qtyButton = event.target.closest("[data-qty-delta]");
+  if (qtyButton) {
+    if (proofMode) return;
+    const [typeId, delta] = qtyButton.dataset.qtyDelta.split(":");
+    const item = state.inventory.find((entry) => entry.id === typeId);
+    if (!item) return;
+    item.quantity = Math.min(99, Math.max(1, item.quantity + Number(delta)));
+    touchLayout(); // 字模数量改动也让已有校样失效
+    renderAll();
+    return;
+  }
   const deleteButton = event.target.closest("[data-delete-type]");
   if (deleteButton) {
+    if (proofMode) return;
     const typeId = deleteButton.dataset.deleteType;
     state.inventory = state.inventory.filter((item) => item.id !== typeId);
     state.placements = state.placements.filter((item) => item.typeId !== typeId);
     if (state.selectedTypeId === typeId) state.selectedTypeId = state.inventory[0]?.id || null;
+    touchLayout(); // 删字模相当于数量归零，且可能移除落字
     renderAll();
     return;
   }
@@ -377,17 +792,25 @@ els.stage.addEventListener("drop", (event) => {
 els.stage.addEventListener("click", (event) => {
   const cell = event.target.closest(".cell");
   if (!cell) return;
-  placeType(Number(cell.dataset.row), Number(cell.dataset.col));
+  const row = Number(cell.dataset.row);
+  const col = Number(cell.dataset.col);
+  if (proofMode) {
+    toggleProofCell(row, col);
+    return;
+  }
+  placeType(row, col);
 });
 
 els.draftList.addEventListener("click", (event) => {
   const loadButton = event.target.closest("[data-load-draft]");
   const deleteButton = event.target.closest("[data-delete-draft]");
   if (loadButton) {
+    if (proofMode) return;
     const draft = state.drafts.find((item) => item.id === loadButton.dataset.loadDraft);
     if (!draft) return;
     state.settings = structuredClone(draft.settings);
     state.placements = structuredClone(draft.placements);
+    touchLayout(); // 载入草稿替换了版面，校样恢复待校并升版本
     renderAll();
   }
   if (deleteButton) {

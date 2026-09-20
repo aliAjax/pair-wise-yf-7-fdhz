@@ -81,6 +81,38 @@
             </div>
             <div id="shortageBadge" class="badge ok">数量充足</div>
           </div>
+          <div id="proofBar" class="proof-bar" hidden>
+            <div class="proof-bar-head">
+              <strong>校对模式</strong>
+              <span>点击版面中有落字的格子，先标为“待登记”，再登记成错字格后提交。</span>
+            </div>
+            <div class="proof-form">
+              <label>
+                校对人
+                <input id="proofreaderInput" type="text" placeholder="登记校对人姓名" />
+              </label>
+              <label class="proof-note">
+                返修说明
+                <textarea id="proofNoteInput" rows="2" placeholder="有错字格时必填；无错字直接通过可留空"></textarea>
+              </label>
+            </div>
+            <div class="proof-cell-cols">
+              <div>
+                <h4>待登记错字格</h4>
+                <div id="pendingCells" class="proof-cell-list"></div>
+              </div>
+              <div>
+                <h4>已登记错字格</h4>
+                <div id="registeredCells" class="proof-cell-list"></div>
+              </div>
+            </div>
+            <p id="proofReasons" class="proof-reasons" hidden></p>
+            <div class="proof-actions">
+              <button id="registerAllBtn" type="button">登记全部待登记格</button>
+              <button id="submitProofBtn" class="primary" type="button">提交校次</button>
+              <button id="cancelProofBtn" type="button">取消</button>
+            </div>
+          </div>
           <div id="stage" class="stage" aria-label="排版画布"></div>
         </section>
 
@@ -90,6 +122,23 @@
             <span id="placedCount"></span>
           </div>
           <div id="usageList" class="usage-list"></div>
+
+          <div class="divider"></div>
+          <section class="proof-panel" aria-label="付印校次">
+            <div class="panel-head">
+              <h2>付印校次</h2>
+              <span id="proofVersion"></span>
+            </div>
+            <div class="proof-status-row">
+              <span id="proofStatusBadge" class="badge idle">尚未送校</span>
+              <button id="proofGateBtn" class="primary" type="button">首次送校</button>
+            </div>
+            <p id="proofHint" class="proof-hint">草稿与版面落字定稿后，在此登记校对人、错字格与返修说明。</p>
+            <div id="occupiedHints" class="occupied-hints"></div>
+            <h3>校次列表</h3>
+            <div id="proofList" class="proof-list"></div>
+          </section>
+
           <div class="divider"></div>
           <h3>已保存草稿</h3>
           <div id="draftList" class="draft-list"></div>

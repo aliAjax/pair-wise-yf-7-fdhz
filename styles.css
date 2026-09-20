@@ -259,6 +259,11 @@ h3 {
   place-items: center;
 }
 
+.type-ops {
+  display: flex;
+  gap: 4px;
+}
+
 .stage-wrap {
   padding: 14px;
 }
@@ -395,6 +400,260 @@ h3 {
   height: 1px;
   background: var(--line);
   margin: 14px 0;
+}
+
+/* 付印校次 */
+.proof-bar {
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+  background: rgba(183, 134, 44, 0.07);
+  padding: 12px;
+  margin-bottom: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.proof-bar-head {
+  display: grid;
+  gap: 3px;
+}
+
+.proof-bar-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.proof-form {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 10px;
+}
+
+.proof-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.proof-form textarea {
+  resize: vertical;
+}
+
+.proof-cell-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.proof-cell-cols h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.proof-cell-list {
+  display: grid;
+  gap: 6px;
+  min-height: 34px;
+}
+
+.proof-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px dashed var(--gold);
+  border-radius: 6px;
+  background: #fffdf8;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.proof-chip.registered {
+  border-style: solid;
+  border-color: var(--red);
+  background: rgba(164, 64, 55, 0.06);
+}
+
+.proof-chip button {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.proof-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.proof-reasons {
+  margin: 0;
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  background: rgba(164, 64, 55, 0.08);
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 10px;
+  white-space: pre-line;
+}
+
+.proof-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.proof-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proof-status-row button {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.badge.idle {
+  background: var(--muted);
+}
+
+.badge.rework {
+  background: var(--gold);
+}
+
+.badge.passed {
+  background: var(--green);
+}
+
+.badge.stale {
+  background: var(--blue);
+}
+
+.proof-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.occupied-hints {
+  display: grid;
+  gap: 6px;
+}
+
+.occupied-hint {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  background: rgba(164, 64, 55, 0.07);
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+.occupied-hint .streak {
+  color: var(--red);
+  font-weight: 900;
+}
+
+.proof-list {
+  display: grid;
+  gap: 8px;
+}
+
+.proof-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 9px;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.proof-item.locked {
+  opacity: 0.72;
+  background: rgba(217, 202, 182, 0.25);
+}
+
+.proof-item .proof-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.proof-item .tag {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 900;
+  color: #fff;
+}
+
+.tag.rework {
+  background: var(--gold);
+}
+
+.tag.passed {
+  background: var(--green);
+}
+
+.tag.locked {
+  background: var(--blue);
+}
+
+.proof-item .proof-meta {
+  color: var(--muted);
+}
+
+.proof-item details {
+  color: var(--muted);
+}
+
+.proof-item details summary {
+  cursor: pointer;
+  color: var(--blue);
+}
+
+.cell.pending-flag {
+  outline: 2px dashed var(--gold);
+  outline-offset: -3px;
+}
+
+.cell.registered-flag {
+  outline: 3px solid var(--red);
+  outline-offset: -3px;
+}
+
+.cell .cell-mark {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 10px;
+  font-weight: 900;
+  color: var(--gold);
+}
+
+.cell.registered-flag .cell-mark {
+  color: var(--red);
+}
+
+.cell {
+  position: relative;
+}
+
+.cell.proof-target {
+  cursor: crosshair;
+}
+
+.cell.proof-empty {
+  cursor: not-allowed;
 }
 
 @media (max-width: 1120px) {
